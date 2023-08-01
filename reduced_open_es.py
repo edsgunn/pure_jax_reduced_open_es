@@ -54,9 +54,11 @@ class ReducedOpenES(Strategy):
         n_devices: Optional[int] = None,
         **fitness_kwargs: Union[bool, int, float]
     ):
-        """OpenAI-ES (Salimans et al. (2017)
+        """
+        Reduced adjustable communication scheme for OpenAI's evolution strategies algorithm
+        Inspired by: OpenAI-ES (Salimans et al. (2017)
         Reference: https://arxiv.org/pdf/1703.03864.pdf
-        Inspired by: https://github.com/hardmaru/estool/blob/master/es.py"""
+        """
         super().__init__(
             popsize,
             num_dims,
@@ -70,7 +72,7 @@ class ReducedOpenES(Strategy):
         self.optimizer = GradientOptimizer[opt_name](self.num_dims)
         self.strategy_name = "ReducedOpenES"
 
-        self.commsize = commsize
+        self.commsize = round(commsize / 2)
         self.horizon_length = horizon_length
         self.rng=rng
         self.num_gens = num_gens
@@ -141,32 +143,39 @@ class ReducedOpenES(Strategy):
         params: EvoParams,
     ) -> EvoState:
         """`tell` performance data for strategy state update."""
-        # Reconstruct noise from last mean/std estimates
-        pivot = int(fitness.size/2)
-        x_hat = x[:pivot,:]
+
+        # Adjust for antithetic sampling
+        half_popsize = int(self.popsize / 2)
+        x_hat = x[:half_popsize,:]
         fitness_hat = fitness.reshape(2,-1)
         fitness_hat = fitness_hat * jnp.array([[1],[-1]])
         fitness_hat = jnp.sum(fitness_hat,axis=0)
+
+        # Reconstruct noise from last mean/std estimates
         noise = (x_hat - state.mean) / state.sigma
+
+        # Calculate utilities
         noise_norm = jnp.linalg.norm(noise, axis=1)
         utility = noise_norm*fitness_hat
+
+        # Estimate mean/std of assumed utility distribution
         recent_utilities = jnp.roll(state.recent_utilities,-1)
         recent_utilities = recent_utilities.at[:,-1].set(utility)
-
         means = jnp.mean(recent_utilities, axis=1)
         stds = jnp.std(recent_utilities, axis=1)
+
+        # Determine mask for communicated samples
         p_norm = jax.scipy.stats.norm.cdf((utility-means)/stds)
+        
         # scipy.stats.binom.cdf(k,n,p) ~~ jax.scipy.special.betainc(n - k, k + 1, 1 - p)
-        p_comms = 1-jax.scipy.special.betainc(self.commsize-1, int(self.popsize / 2)-self.commsize+1, 1 - p_norm)
-
-
-
+        p_comms = 1-jax.scipy.special.betainc(self.commsize-1, half_popsize-self.commsize+1, 1 - p_norm)
         rng, _rng = jax.random.split(state.rng)
-        comm_mask = jax.random.uniform(_rng, shape=(int(self.popsize / 2),)) < p_comms
+        comm_mask = jax.random.uniform(_rng, shape=(half_popsize,)) < p_comms
 
-        num_comm = jnp.sum(comm_mask)
+        num_comm = 2*jnp.sum(comm_mask)
         num_comms = state.num_comms.at[state.step].set(num_comm)
-        masked_fitness = jax.lax.select(comm_mask, fitness_hat, jnp.zeros(int(self.popsize / 2)))
+
+        masked_fitness = jax.lax.select(comm_mask, fitness_hat, jnp.zeros(half_popsize))
         theta_grad = (
             1.0 / (2 * jnp.max(jnp.array([num_comm, 1])) * state.sigma) * jnp.dot(noise.T, masked_fitness)
         )
@@ -174,11 +183,8 @@ class ReducedOpenES(Strategy):
         open_es_theta_grad = (
             1.0 / (self.popsize * state.sigma) * jnp.dot(noise.T, fitness_hat)
         )
-        # err = jnp.linalg.norm(theta_grad-open_es_theta_grad)
         err = jnp.sum(theta_grad-open_es_theta_grad)
-        # err = 1-jnp.dot(theta_grad/jnp.linalg.norm(theta_grad), open_es_theta_grad/jnp.linalg.norm(theta_grad))
-        # mean_err = (state.step * state.mean_err + err)/(state.step+1)
-        mean_err = state.mean_err + err
+        mean_err = (state.step * state.mean_err + err)/(state.step+1)
 
         # Grad update using optimizer instance - decay lrate if desired
         mean, opt_state = self.optimizer.step(
