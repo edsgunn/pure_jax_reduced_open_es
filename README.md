@@ -6,4 +6,6 @@ The problem setting is that of training an agent on a single agent RL task in a 
 
 In the OpenAI ES algorithm every node communicates every episode with a single scalar value. Since we cannot reduce the size of the messages here (beyond quantisation) our algorithm seeks to reduce the number of messages sent by agents. To do this we prioritise episodes that are particularly useful for learning. The problem with this is that agents do not know what rewards other agents recieved in this episode and therefore do not know how useful the reward they recieved was. Each agent can model their expected reward for an episode and if the reward recieved is sufficiently improbable then it is deemed worth communicating. More details on the precise algorithm can be found in [the report](https://github.com/edsgunn/pure_jax_reduced_open_es/blob/main/Report.pdf).
 
+## Usage
 
+Try the notebooks! The implementation of the reduced OpenES algorithm can be found in `reduced_open_es.py`.
